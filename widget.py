@@ -334,6 +334,7 @@ cv.place(x=0, y=0, relwidth=1, relheight=1)
 FTITLE = tkfont.Font(family="Segoe UI Semibold", size=10)
 FSUB   = tkfont.Font(family="Segoe UI", size=8)
 FSYM   = tkfont.Font(family="Segoe UI Symbol", size=-int(H * 0.5))
+FICON  = tkfont.Font(family="Segoe MDL2 Assets", size=-int(H * 0.32))  # Spotify hoparlor ikonu
 
 cover_disp = {"img": None, "token": None}      # yuvarlatilmis kapak
 theme = {"bg": BASE_BG, "fg": WHITE, "sub": GREY}
@@ -435,11 +436,19 @@ def draw():
     cv.create_rectangle(TX_RIGHT, 0, WIDTH, H, fill=theme["bg"], outline="")
     # 4) sag bolge: ses ayarlanirken ses cubugu, degilse spektrum
     if volfb["n"] > 0:
-        lvl = spot_audio["level"]; x1, x2 = BARS_X0, WIDTH - 8; yb = H * 0.60
-        cv.create_rectangle(x1, yb-3, x2, yb+3, fill=TRACK_GREY, outline="")
-        cv.create_rectangle(x1, yb-3, x1 + (x2-x1)*lvl, yb+3, fill=SPOT_GREEN, outline="")
-        cv.create_text((x1+x2)//2, yb-12, fill=theme["fg"], font=FSUB,
-                       text=f"%{int(round(lvl*100))}")
+        # Spotify ses gostergesi: hoparlor ikonu + ince cubuk (yesil dolgu +
+        # beyaz yuvarlak tutamac + gri track). Yuzde sayisi yok (orijinal gibi).
+        lvl = spot_audio["level"]; yb = H * 0.5
+        ic = ("" if lvl <= 0.001 else "" if lvl <= 0.33
+              else "" if lvl <= 0.66 else "")
+        cv.create_text(BARS_X0, yb, anchor="w", fill=theme["fg"], font=FICON, text=ic)
+        bx1 = BARS_X0 + 20; bx2 = WIDTH - 10
+        cv.create_line(bx1, yb, bx2, yb, fill=TRACK_GREY, width=3, capstyle="round")
+        fx = bx1 + (bx2 - bx1) * max(0.0, min(1.0, lvl))
+        if fx > bx1 + 0.5:
+            cv.create_line(bx1, yb, fx, yb, fill=SPOT_GREEN, width=3, capstyle="round")
+        rr = 4
+        cv.create_oval(fx-rr, yb-rr, fx+rr, yb+rr, fill="#ffffff", outline="")
     else:
         base = H - 4; maxbar = H - 12; gap = 1.5
         bw = max(1.0, (BAR_ZONE - (BARS - 1) * gap) / BARS)
