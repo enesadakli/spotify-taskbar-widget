@@ -7,11 +7,37 @@ Taskbar Spotify gostergesi — resmi Spotify gorunumu:
   - Spektrum SADECE Spotify ses cikardiginda oynar (pycaw ile Spotify oturumu).
 Sag tik: Kapat.
 """
-import sys, os, io, asyncio, threading, time, winreg
+import sys, os, io, asyncio, threading, time, winreg, logging
+from logging.handlers import RotatingFileHandler
 import numpy as np
 import psutil
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+
+# ---------------- Logging ----------------
+# widget.log'a yazar (max ~1MB, donuyor). WIDGET_DEBUG=1 -> ayrintili (DEBUG).
+log = logging.getLogger("spotifywidget")
+def _setup_logging():
+    log.setLevel(logging.DEBUG if os.environ.get("WIDGET_DEBUG") else logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(message)s")
+    try:
+        fh = RotatingFileHandler(os.path.join(BASE, "widget.log"),
+                                 maxBytes=512 * 1024, backupCount=1, encoding="utf-8")
+        fh.setFormatter(fmt); log.addHandler(fh)
+    except Exception:
+        pass
+    if "--test" in sys.argv:                      # test modunda ekrana da bas
+        sh = logging.StreamHandler(); sh.setFormatter(fmt); log.addHandler(sh)
+_setup_logging()
+
+def _thread(target, name):
+    """Daemon thread; hedef beklenmedik sekilde olurse sessiz olmesin, loglansin."""
+    def wrap():
+        try:
+            target()
+        except Exception:
+            log.exception("thread '%s' beklenmedik sekilde durdu", name)
+    threading.Thread(target=wrap, name=name, daemon=True).start()
 WIDTH   = 330
 BARS    = 20
 BAR_ZONE = 108           # sag taraftaki spektrum bolgesi genisligi
@@ -76,13 +102,17 @@ async def _fetch_media(last_title):
 
 def media_loop():
     from PIL import Image
-    last_title = None
+    last_title = None; was_present = False
     while True:
         try:
             info = asyncio.run(_fetch_media(last_title))
         except Exception:
-            info = None
-        if info and info["present"]:
+            log.debug("medya bilgisi alinamadi", exc_info=True); info = None
+        present = bool(info and info["present"])
+        if present != was_present:
+            log.info("Spotify oturumu %s", "algilandi" if present else "kayboldu")
+            was_present = present
+        if present:
             media_state.update({k: info[k] for k in
                 ("name","title","artist","album","pos","dur","playing","present")})
             if info["cover_bytes"]:
@@ -90,8 +120,9 @@ def media_loop():
                     img = Image.open(io.BytesIO(info["cover_bytes"])).convert("RGB")
                     cover["pil"] = img.resize((96, 96), Image.LANCZOS)
                     cover["token"] = info["title"]
+                    log.debug("kapak guncellendi: %s", info["title"])
                 except Exception:
-                    pass
+                    log.debug("kapak cozulemedi", exc_info=True)
             last_title = info["title"]
         else:
             media_state.update(present=False, playing=False)
@@ -122,9 +153,10 @@ def send_cmd(cmd):
                 _appcmd(11)   # APPCOMMAND_MEDIA_NEXTTRACK
             elif cmd == "prev":
                 _appcmd(12)   # APPCOMMAND_MEDIA_PREVIOUSTRACK
+            log.debug("komut gonderildi: %s", cmd)
         except Exception:
-            pass
-    threading.Thread(target=run, daemon=True).start()
+            log.warning("komut '%s' basarisiz", cmd, exc_info=True)
+    threading.Thread(target=run, daemon=True, name="cmd").start()
 
 # ---------------- Spotify ses kapisi (pycaw) ----------------
 def gate_loop():
@@ -159,8 +191,9 @@ def gate_loop():
                         try: v.SetMasterVolume(new, None)
                         except Exception: pass
                     spot_audio["level"] = new
+                    log.debug("Spotify sesi -> %d%%", round(new * 100))
                 except Exception:
-                    pass
+                    log.debug("ses ayari uygulanamadi", exc_info=True)
             peak = 0.0
             for m in meters:
                 try: peak = max(peak, m.GetPeakValue())
@@ -213,6 +246,7 @@ def audio_loop():
                     norm = np.clip(raw / (peak + 1e-9), 0, 1) * gate["v"]
                     spectrum = np.maximum(norm, spectrum * 0.78)
         except Exception:
+            log.warning("ses yakalama/spektrum hatasi, yeniden denenecek", exc_info=True)
             spectrum = spectrum * 0.0; time.sleep(2)
 
 def fmt_secs(s):
@@ -220,10 +254,10 @@ def fmt_secs(s):
 
 # ---------------- Test modu ----------------
 if "--test" in sys.argv:
-    threading.Thread(target=media_loop, daemon=True).start()
+    _thread(media_loop, "media")
     if SPECTRUM:
-        threading.Thread(target=audio_loop, daemon=True).start()
-        threading.Thread(target=gate_loop, daemon=True).start()
+        _thread(audio_loop, "audio")
+        _thread(gate_loop, "gate")
     time.sleep(3)
     print("MEDIA:", {k: media_state[k] for k in ("title","artist","album","dur","playing","present")})
     print("gate:", round(gate["v"], 3), "spectrum max:", round(float(spectrum.max()), 3))
@@ -474,9 +508,9 @@ def draw():
 def tick():
     want = media_state["present"] and not foreground_is_fullscreen()
     if want and not shown["v"]:
-        u.ShowWindow(get_top(), 4); shown["v"] = True
+        u.ShowWindow(get_top(), 4); shown["v"] = True; log.info("widget gosterildi")
     elif not want and shown["v"]:
-        u.ShowWindow(get_top(), 0); shown["v"] = False
+        u.ShowWindow(get_top(), 0); shown["v"] = False; log.info("widget gizlendi")
     if shown["v"]:
         apply_theme(); sync_cover(); place_over_taskbar(); draw()
     root.after(1000, tick)
@@ -537,13 +571,17 @@ cv.bind("<Button-1>", on_click)
 cv.bind("<Button-3>", on_right)
 cv.bind("<MouseWheel>", on_wheel)
 
-threading.Thread(target=media_loop, daemon=True).start()
+_thread(media_loop, "media")
 if SPECTRUM:
-    threading.Thread(target=audio_loop, daemon=True).start()
-    threading.Thread(target=gate_loop, daemon=True).start()
+    _thread(audio_loop, "audio")
+    _thread(gate_loop, "gate")
 
 apply_theme()   # baslangicta arka plani taskbar rengine uydur
 u.ShowWindow(get_top(), 0)
+log.info("widget baslatildi (H=%d, spectrum=%s)", H, SPECTRUM)
 root.after(1000, tick)
 root.after(300, animate)
-root.mainloop()
+try:
+    root.mainloop()
+except Exception:
+    log.exception("mainloop cikti")
