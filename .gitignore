@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime / local
+config.json
+_clicklog.txt
+*.log
+
+# Virtual envs
+.venv/
+venv/
+env/

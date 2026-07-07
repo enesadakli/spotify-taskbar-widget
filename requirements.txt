@@ -1,0 +1,6 @@
+numpy
+psutil
+Pillow
+winsdk
+soundcard
+pycaw
