@@ -32,6 +32,8 @@ media_state = {"name": "", "title": "", "artist": "", "album": "",
 cover = {"pil": None, "token": None}
 spectrum = np.zeros(BARS)
 gate = {"v": 0.0}
+volreq = {"delta": 0.0}        # fare tekerleginden gelen ses degisikligi (birikimli)
+spot_audio = {"level": 0.7}    # Spotify uygulama ses seviyesi 0..1 (gate_loop gunceller)
 
 # ---------------- Spotify (winsdk) ----------------
 async def _fetch_media(last_title):
@@ -131,18 +133,34 @@ def gate_loop():
         import comtypes; comtypes.CoInitialize()
     except Exception:
         pass
-    meters = []; i = 0
+    meters = []; vols = []; i = 0
     while True:
         i += 1
         try:
             if i % 33 == 1:
-                meters = []
+                meters = []; vols = []
                 for s in AudioUtilities.GetAllSessions():
                     try:
                         if s.Process and s.Process.name().lower() == "spotify.exe":
                             meters.append(s._ctl.QueryInterface(IAudioMeterInformation))
+                            try: vols.append(s.SimpleAudioVolume)
+                            except Exception: pass
                     except Exception:
                         pass
+                if vols:
+                    try: spot_audio["level"] = float(vols[0].GetMasterVolume())
+                    except Exception: pass
+            # fare tekerleginden gelen ses degisikligini uygula (sadece Spotify)
+            if volreq["delta"] and vols:
+                d = volreq["delta"]; volreq["delta"] = 0.0
+                try:
+                    new = min(1.0, max(0.0, float(vols[0].GetMasterVolume()) + d))
+                    for v in vols:
+                        try: v.SetMasterVolume(new, None)
+                        except Exception: pass
+                    spot_audio["level"] = new
+                except Exception:
+                    pass
             peak = 0.0
             for m in meters:
                 try: peak = max(peak, m.GetPeakValue())
@@ -324,6 +342,16 @@ PAD = 4
 CLICK_MS = 350                                  # tik sayimi penceresi
 click = {"n": 0, "job": None}
 flash = {"sym": "", "n": 0}                      # kapak uzeri kisa geri bildirim
+volfb = {"n": 0}                                 # ses ayari geri bildirimi (frame sayaci)
+marq  = {"title": None, "off": 0.0, "pause": 0}  # kayan baslik durumu
+MARQ_GAP = 42                                     # tekrar eden baslik arasi bosluk
+
+# bolge sabitleri (kapak | baslik | spektrum)
+COVER    = H - 2 * PAD
+X0       = PAD + COVER + 12
+BARS_X0  = WIDTH - 8 - BAR_ZONE
+TX_RIGHT = BARS_X0 - 6
+ZONEW    = TX_RIGHT - X0                          # baslik alani genisligi
 
 def get_top():
     return u.GetAncestor(root.winfo_id(), 2)
@@ -386,35 +414,51 @@ def ellipsize(s, font, maxpx):
     return s + "…"
 
 def draw():
-    cv.delete("all")   # arka plan = canvas'in kendi rengi (taskbar'a uyarli)
-    x0 = (PAD + (H - 2*PAD) + 12) if cover_disp["img"] is not None else 12
+    cv.delete("all")
+    title = marq["title"] or media_state["title"] or media_state["name"]
+    textw = FTITLE.measure(title)
+    scroll = textw > ZONEW
+    # 1) baslik: sigmazsa kayar (iki kopya kesintisiz dongu icin), sigarsa sabit
+    yt = H * 0.34
+    if scroll:
+        off = marq["off"]
+        cv.create_text(X0 - off, yt, anchor="w", fill=theme["fg"], font=FTITLE, text=title)
+        cv.create_text(X0 - off + textw + MARQ_GAP, yt, anchor="w",
+                       fill=theme["fg"], font=FTITLE, text=title)
+    else:
+        cv.create_text(X0, yt, anchor="w", fill=theme["fg"], font=FTITLE, text=title)
+    # 2) sol maske + kapak (baslik tasmasini kirp)
+    cv.create_rectangle(0, 0, X0, H, fill=theme["bg"], outline="")
     if cover_disp["img"] is not None:
         cv.create_image(PAD, PAD, anchor="nw", image=cover_disp["img"])
-    # ilerleme cubugu (ust 2px)
+    # 3) sag maske (baslik tasmasi + sag bolge zemini)
+    cv.create_rectangle(TX_RIGHT, 0, WIDTH, H, fill=theme["bg"], outline="")
+    # 4) sag bolge: ses ayarlanirken ses cubugu, degilse spektrum
+    if volfb["n"] > 0:
+        lvl = spot_audio["level"]; x1, x2 = BARS_X0, WIDTH - 8; yb = H * 0.60
+        cv.create_rectangle(x1, yb-3, x2, yb+3, fill=TRACK_GREY, outline="")
+        cv.create_rectangle(x1, yb-3, x1 + (x2-x1)*lvl, yb+3, fill=SPOT_GREEN, outline="")
+        cv.create_text((x1+x2)//2, yb-12, fill=theme["fg"], font=FSUB,
+                       text=f"%{int(round(lvl*100))}")
+    else:
+        base = H - 4; maxbar = H - 12; gap = 1.5
+        bw = max(1.0, (BAR_ZONE - (BARS - 1) * gap) / BARS)
+        for k in range(BARS):
+            val = float(spectrum[k]); x = BARS_X0 + k * (bw + gap)
+            if val > 0.02:
+                cv.create_rectangle(x, base - val*maxbar, x + bw, base,
+                                    fill=SPOT_GREEN, outline="")
+    # 5) sanatci
+    cv.create_text(X0, H*0.68, anchor="w", fill=theme["sub"], font=FSUB,
+                   text=ellipsize(media_state["artist"], FSUB, ZONEW))
+    # 6) ilerleme cubugu (ust 2px)
     dur = media_state["dur"]; prog = (media_state["pos"] / dur) if dur > 0 else 0
     cv.create_rectangle(0, 0, WIDTH, 2, fill=TRACK_GREY, outline="")
     if prog > 0:
         cv.create_rectangle(0, 0, int(WIDTH * min(prog, 1.0)), 2, fill=SPOT_GREEN, outline="")
-    # spektrum bolgesi (sag)
-    bars_x0 = WIDTH - 8 - BAR_ZONE
-    base = H - 4; maxbar = H - 12
-    gap = 1.5
-    bw = max(1.0, (BAR_ZONE - (BARS - 1) * gap) / BARS)
-    for k in range(BARS):
-        val = float(spectrum[k]); x = bars_x0 + k * (bw + gap)
-        if val > 0.02:
-            cv.create_rectangle(x, base - val * maxbar, x + bw, base,
-                                fill=SPOT_GREEN, outline="")
-    # sarki + sanatci (kapak ile spektrum arasi)
-    text_w = bars_x0 - x0 - 10
-    title = media_state["title"] or media_state["name"]
-    cv.create_text(x0, H*0.34, anchor="w", fill=theme["fg"], font=FTITLE,
-                   text=ellipsize(title, FTITLE, text_w))
-    cv.create_text(x0, H*0.68, anchor="w", fill=theme["sub"], font=FSUB,
-                   text=ellipsize(media_state["artist"], FSUB, text_w))
-    # kapak uzeri kisa geri bildirim (tiklama)
+    # 7) kapak uzeri tiklama geri bildirimi
     if flash["n"] > 0 and cover_disp["img"] is not None:
-        cx = PAD + (H - 2*PAD) / 2; cy = H / 2
+        cx = PAD + COVER/2; cy = H/2
         cv.create_text(cx+1, cy+1, text=flash["sym"], fill="#000000", font=FSYM)
         cv.create_text(cx, cy, text=flash["sym"], fill="#ffffff", font=FSYM)
 
@@ -428,10 +472,24 @@ def tick():
         apply_theme(); sync_cover(); place_over_taskbar(); draw()
     root.after(1000, tick)
 
+def advance_marquee():
+    t = media_state["title"] or media_state["name"]
+    if t != marq["title"]:
+        marq["title"] = t; marq["off"] = 0.0; marq["pause"] = 28   # sarki degisti -> bekle
+        return
+    if FTITLE.measure(t) <= ZONEW:
+        marq["off"] = 0.0; return                                  # sigiyor -> kaydirma
+    if marq["pause"] > 0:
+        marq["pause"] -= 1; return                                 # baslangicta kisa bekle
+    marq["off"] += 1.1
+    if marq["off"] > FTITLE.measure(t) + MARQ_GAP:
+        marq["off"] = 0.0; marq["pause"] = 28
+
 def animate():
     if shown["v"]:
-        if flash["n"] > 0:
-            flash["n"] -= 1
+        if flash["n"] > 0: flash["n"] -= 1
+        if volfb["n"] > 0: volfb["n"] -= 1
+        advance_marquee()
         draw()
     root.after(45, animate)
 
@@ -461,8 +519,14 @@ def on_right(e):
     m.add_command(label="Kapat", command=root.destroy)
     m.tk_popup(e.x_root, e.y_root)
 
+def on_wheel(e):
+    # imlec widget uzerindeyken tekerlek -> SADECE Spotify sesi (gate_loop uygular)
+    volreq["delta"] += 0.05 if e.delta > 0 else -0.05
+    volfb["n"] = 40                              # ~1.8 sn ses cubugu goster
+
 cv.bind("<Button-1>", on_click)
 cv.bind("<Button-3>", on_right)
+cv.bind("<MouseWheel>", on_wheel)
 
 threading.Thread(target=media_loop, daemon=True).start()
 if SPECTRUM:
