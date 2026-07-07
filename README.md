@@ -11,6 +11,8 @@ A minimal **Spotify "now playing" widget that lives inside the Windows 11 taskba
 - **Real-time audio spectrum** — captures the system audio output (WASAPI loopback) and runs an FFT to draw Spotify-green frequency bars.
 - **Reacts only to Spotify** — the spectrum is gated by Spotify's own audio-session level (via the Windows volume mixer), so other apps' sound never drives the bars.
 - **Click controls** — 1 click = play/pause, 2 clicks = next track, 3 clicks = previous track.
+- **Scroll to set volume** — the mouse wheel over the widget adjusts **only Spotify's** volume (per-app, not the system master), with an on-widget level indicator.
+- **Scrolling title** — long track names scroll smoothly (marquee) instead of being truncated.
 - **Smart visibility** — shows only when Spotify is open with a track, hides automatically during fullscreen apps (movies/games), and disappears when Spotify is closed.
 - **Theme-aware** — the background follows the taskbar color (dark/light theme or accent color).
 
@@ -49,6 +51,7 @@ The bar appears in the taskbar once Spotify is playing/paused with a track loade
 | 1 click on cover | Play / Pause |
 | 2 clicks on cover | Next track |
 | 3 clicks on cover | Previous track |
+| Scroll wheel over widget | Adjust Spotify volume (Spotify only) |
 | Right click | Close |
 
 ## How it works
